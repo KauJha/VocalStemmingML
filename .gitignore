@@ -1,2 +1,8 @@
 /VocalStemmingML/train
 /VocalStemmingML/test
+MUSDB18/
+outputs/
+__pycache__/
+*.pyc
+.venv/
+venv/
