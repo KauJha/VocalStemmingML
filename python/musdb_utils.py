@@ -1,7 +1,7 @@
 """
-musdb_feature_explorer.py
+musdb_utils.py
 
-Explore MUSDB18 audio by:
+MUSDB18 audio utility functions:
 - loading either the official 7-second sample snippets or a local full dataset
 - plotting mixture / vocal spectrograms
 - extracting compact spectral features
@@ -9,19 +9,20 @@ Explore MUSDB18 audio by:
 
 Requirements:
     pip install musdb librosa matplotlib numpy pandas soundfile
+    ffmpeg debian package (sudo apt install -y ffmpeg)
 
 Examples:
     # Use official 7-second MUSDB snippets
-    python musdb_feature_explorer.py --mode sample
+    python musdb_tester.py --mode sample
 
     # Use a specific sample track by exact name
-    python musdb_feature_explorer.py --mode sample --track "Actions - One Minute Smile"
+    python musdb_tester.py --mode sample --track "Actions - One Minute Smile"
 
     # Use a locally downloaded MUSDB18 dataset
-    python musdb_feature_explorer.py --mode local --root /path/to/musdb18 --track "Actions - One Minute Smile"
+    python musdb_tester.py --mode local --root /path/to/musdb18 --track "Actions - One Minute Smile"
 
     # Use local test subset
-    python musdb_feature_explorer.py --mode local --root /path/to/musdb18 --subset test
+    python musdb_tester.py --mode local --root /path/to/musdb18 --subset test
 """
 
 import os
