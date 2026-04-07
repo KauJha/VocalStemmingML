@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import utils as utils
+
 def main():
     SCRIPT_DIR = Path(__file__).resolve().parent
     DEFAULT_OUTDIR = SCRIPT_DIR.parent / "outputs"
