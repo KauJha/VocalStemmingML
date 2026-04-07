@@ -1,15 +1,15 @@
 """
-musdb_utils.py
-
-MUSDB18 audio utility functions:
+utils.py
+-------------------------------------------------------------------------------
+Requirements:
+    pip install musdb librosa matplotlib numpy pandas soundfile
+    ffmpeg debian package (sudo apt install -y ffmpeg)
+-------------------------------------------------------------------------------
+Audio utility functions:
 - loading either the official 7-second sample snippets or a local full dataset
 - plotting mixture / vocal spectrograms
 - extracting compact spectral features
 - identifying vocal-heavy regions with an ideal ratio mask
-
-Requirements:
-    pip install musdb librosa matplotlib numpy pandas soundfile
-    ffmpeg debian package (sudo apt install -y ffmpeg)
 
 Examples:
     # Use official 7-second MUSDB snippets
@@ -23,9 +23,15 @@ Examples:
 
     # Use local test subset
     python musdb_tester.py --mode local --root /path/to/musdb18 --subset test
+-------------------------------------------------------------------------------
+REPET utility functions:
+...
+-------------------------------------------------------------------------------
+etc
 """
 
 import os
+
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -36,7 +42,11 @@ import librosa
 import librosa.display
 import musdb
 
-
+"""
+-------------------------------------------------------------------------------
+Audio Utility Functions
+-------------------------------------------------------------------------------
+"""
 def downmix_to_mono(audio: np.ndarray) -> np.ndarray:
     """Convert stereo audio to mono."""
     if audio.ndim == 1:
@@ -344,3 +354,8 @@ def save_outputs(
 
     print(f"Saved feature table to: {feature_csv}")
     print(f"Saved vocal-heavy frame summary to: {vocal_regions_csv}")
+"""
+-------------------------------------------------------------------------------
+REPET Utility Functions
+-------------------------------------------------------------------------------
+"""
