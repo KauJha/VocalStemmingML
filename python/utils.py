@@ -48,7 +48,525 @@ Examples:
 -------------------------------------------------------------------------------
 RPCA utility functions:
 -------------------------------------------------------------------------------
+"""
+def rpca_ialm(
+    M: np.ndarray,
+    lam: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6
+) -> tuple[np.ndarray, np.ndarray, int, bool]:
+    """
+    Inexact Augmented Lagrange Multiplier (IALM) solver for Robust PCA.
+ 
+    Decomposes M ≈ L + S  where L is low-rank (accompaniment) and S is sparse
+    (vocals / foreground events).  Follows Lin, Chen & Ma (2010).
+ 
+    Parameters
+    ----------
+    M        : 2-D array to decompose, shape (freq_bins, time_frames)
+    lam      : Sparsity regularization weight.  Defaults to
+               1 / sqrt(max(m, n)).
+    max_iter : Maximum number of outer iterations.
+    tol      : Convergence threshold on ||M - L - S||_F / ||M||_F.
+ 
+    Returns
+    -------
+    L        : Low-rank component (shape same as M)
+    S        : Sparse component   (shape same as M)
+    n_iter   : Number of iterations executed
+    converged: True if the relative residual dropped below tol
+    """
+    m, n = M.shape
+    norm_M = np.linalg.norm(M, "fro")
+ 
+    if lam is None:
+        lam = 1.0 / np.sqrt(max(m, n))
+ 
+    # --- initialisation ---
+    mu = 1.25 / np.linalg.norm(M, 2)   # operator / spectral norm
+    mu_bar = mu * 1e7
+    rho = 1.5
+ 
+    Y = M / max(np.linalg.norm(M, 2), np.linalg.norm(M, np.inf) / lam)
+    S = np.zeros_like(M)
+    L = np.zeros_like(M)
+ 
+    converged = False
+    n_iter = 0
+ 
+    for i in range(max_iter):
+        n_iter = i + 1
+ 
+        # --- update L via singular value thresholding ---
+        U, sigma, Vt = np.linalg.svd(M - S + Y / mu, full_matrices=False)
+        threshold = 1.0 / mu
+        sigma_thresh = np.maximum(sigma - threshold, 0.0)
+        L = (U * sigma_thresh) @ Vt
+ 
+        # --- update S via soft thresholding ---
+        residual_S = M - L + Y / mu
+        threshold_S = lam / mu
+        S = np.sign(residual_S) * np.maximum(np.abs(residual_S) - threshold_S, 0.0)
+ 
+        # --- update dual variable Y ---
+        delta = M - L - S
+        Y = Y + mu * delta
+        mu = min(rho * mu, mu_bar)
+ 
+        # --- convergence check ---
+        rel_err = np.linalg.norm(delta, "fro") / (norm_M + 1e-12)
+        if rel_err < tol:
+            converged = True
+            break
+ 
+    return L, S, n_iter, converged
+ 
+ 
+def rpca_vocal_mask_from_audio(
+    y_mix: np.ndarray,
+    sr: int,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    win_length: int = 2048,
+    lam: float | None = None,
+    max_iter: int = 100,
+    tol: float = 1e-6,
+    mask_eps: float = 1e-8
+) -> dict:
+    """
+    Run RPCA on the mixture log-magnitude spectrogram and return a soft
+    vocal-oriented mask.
+ 
+    The accompaniment is modelled by the low-rank component L; the sparse
+    component S captures foreground events (vocals, transients).  The vocal
+    mask is derived from the relative energy of S at each time-frequency bin.
+ 
+    Parameters
+    ----------
+    y_mix      : Mono mixture waveform.
+    sr         : Sample rate.
+    n_fft / hop_length / win_length : STFT parameters.
+    lam        : RPCA regularization weight (None → automatic).
+    max_iter   : Maximum IALM iterations.
+    tol        : IALM convergence tolerance.
+    mask_eps   : Small constant for numerical stability in mask computation.
+ 
+    Returns
+    -------
+    dict with keys:
+        mix_feat         – output of compute_stft_features
+        low_rank_mag     – magnitude approximation from L (accompaniment model)
+        sparse_mag       – magnitude approximation from S (vocal / foreground)
+        vocal_mask       – soft vocal mask in [0, 1], shape (freq, time)
+        background_mask  – complement of vocal_mask
+        lam_used         – lambda value that was used
+        n_iter           – number of IALM iterations
+        converged        – whether IALM converged
+    """
+    mix_feat = compute_stft_features(
+        y_mix, sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length
+    )
+ 
+    mag = mix_feat["mag"]
+ 
+    # RPCA is applied to the log-magnitude spectrogram; this compresses the
+    # dynamic range and makes the low-rank assumption more appropriate.
+    log_mag = np.log1p(mag)
+ 
+    L, S, n_iter, converged = rpca_ialm(
+        log_mag,
+        lam=lam,
+        max_iter=max_iter,
+        tol=tol
+    )
+ 
+    lam_used = (lam if lam is not None
+                else 1.0 / np.sqrt(max(log_mag.shape)))
+ 
+    # Map back to linear magnitude space for mask construction.
+    low_rank_mag = np.expm1(np.clip(L, 0.0, None))
+    sparse_mag = np.expm1(np.clip(S, 0.0, None))
+ 
+    # Soft vocal mask: proportion of sparse energy at each bin.
+    total = low_rank_mag + sparse_mag
+    vocal_mask = _safe_divide(sparse_mag, total, eps=mask_eps)
+    vocal_mask = np.clip(vocal_mask, 0.0, 1.0)
+ 
+    background_mask = 1.0 - vocal_mask
+ 
+    return {
+        "mix_feat": mix_feat,
+        "low_rank_mag": low_rank_mag,
+        "sparse_mag": sparse_mag,
+        "vocal_mask": vocal_mask,
+        "background_mask": background_mask,
+        "lam_used": lam_used,
+        "n_iter": n_iter,
+        "converged": converged,
+    }
+ 
+ 
+def rpca_mask_metrics(
+    estimated_vocal_mask: np.ndarray,
+    ideal_vocal_mask: np.ndarray,
+    threshold: float = 0.5
+) -> dict:
+    """
+    Lightweight mask-quality metrics for RPCA vocal mask evaluation.
+ 
+    Identical in structure to repet_mask_metrics so results are directly
+    comparable across all three unsupervised methods.
+    """
+    est = np.asarray(estimated_vocal_mask, dtype=np.float64)
+    ref = np.asarray(ideal_vocal_mask, dtype=np.float64)
+ 
+    if est.shape != ref.shape:
+        raise ValueError(f"Shape mismatch: est {est.shape}, ref {ref.shape}")
+ 
+    mae = float(np.mean(np.abs(est - ref)))
+    mse = float(np.mean((est - ref) ** 2))
+ 
+    est_bin = est >= threshold
+    ref_bin = ref >= threshold
+ 
+    tp = np.sum(est_bin & ref_bin)
+    fp = np.sum(est_bin & ~ref_bin)
+    fn = np.sum(~est_bin & ref_bin)
+ 
+    precision = float(tp / (tp + fp + 1e-8))
+    recall    = float(tp / (tp + fn + 1e-8))
+    f1        = float(2 * precision * recall / (precision + recall + 1e-8))
+ 
+    corr = (
+        float(np.corrcoef(est.ravel(), ref.ravel())[0, 1])
+        if np.std(est) > 0 and np.std(ref) > 0
+        else 0.0
+    )
+ 
+    return {
+        "mae": mae,
+        "mse": mse,
+        "precision@thr": precision,
+        "recall@thr": recall,
+        "f1@thr": f1,
+        "corr": corr,
+    }
+ 
+ 
+def save_rpca_outputs(
+    outdir: str,
+    track_name: str,
+    mix_mag_db: np.ndarray,
+    vocal_mask: np.ndarray,
+    ideal_mask: np.ndarray,
+    low_rank_mag: np.ndarray,
+    sparse_mag: np.ndarray,
+    sr: int,
+    hop_length: int
+) -> None:
+    """Save RPCA spectrograms and masks as PNG files."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    safe_name = track_name.replace("/", "_").replace("\\", "_")
+ 
+    plot_spectrogram(
+        mix_mag_db, sr, hop_length,
+        title=f"Mixture Spectrogram: {track_name}",
+        save_path=str(outdir / f"{safe_name}_rpca_mix_spec.png"),
+        db_scale=True
+    )
+ 
+    plot_spectrogram(
+        vocal_mask, sr, hop_length,
+        title=f"RPCA Vocal Mask: {track_name}",
+        save_path=str(outdir / f"{safe_name}_rpca_vocal_mask.png"),
+        db_scale=False
+    )
+ 
+    plot_spectrogram(
+        ideal_mask, sr, hop_length,
+        title=f"Ideal Vocal Mask: {track_name}",
+        save_path=str(outdir / f"{safe_name}_rpca_ideal_vocal_mask.png"),
+        db_scale=False
+    )
+ 
+    low_rank_db = librosa.amplitude_to_db(low_rank_mag, ref=np.max)
+    plot_spectrogram(
+        low_rank_db, sr, hop_length,
+        title=f"RPCA Low-Rank Component (Accompaniment): {track_name}",
+        save_path=str(outdir / f"{safe_name}_rpca_low_rank.png"),
+        db_scale=True
+    )
+ 
+    sparse_db = librosa.amplitude_to_db(sparse_mag + 1e-8, ref=np.max)
+    plot_spectrogram(
+        sparse_db, sr, hop_length,
+        title=f"RPCA Sparse Component (Vocal/Foreground): {track_name}",
+        save_path=str(outdir / f"{safe_name}_rpca_sparse.png"),
+        db_scale=True
+    )
+
+"""
+-------------------------------------------------------------------------------
 HPSS utility functions:
+-------------------------------------------------------------------------------
+"""
+def _ensure_odd(k: int, name: str) -> int:
+    """Return k if it is a positive odd integer, otherwise raise a clear error."""
+    if k < 1 or k % 2 == 0:
+        raise ValueError(
+            f"{name} must be a positive odd integer; got {k}. "
+            "Try the next odd value, e.g. {k + 1 if k % 2 == 0 else k + 2}."
+        )
+    return k
+ 
+ 
+def hpss_masks_from_magnitude(
+    mag: np.ndarray,
+    harmonic_kernel: int = 31,
+    percussive_kernel: int = 31,
+    margin: float = 1.0,
+    mask_eps: float = 1e-8
+) -> dict:
+    """
+    Compute HPSS-based harmonic, percussive, and residual masks from a
+    magnitude spectrogram.
+ 
+    Harmonic components are locally smooth along the time axis; percussive
+    components are locally smooth along the frequency axis.  Median filtering
+    in the respective dimension isolates each type.
+ 
+    Parameters
+    ----------
+    mag               : Magnitude spectrogram, shape (freq_bins, time_frames).
+    harmonic_kernel   : Median filter length in time (must be odd).
+    percussive_kernel : Median filter length in frequency (must be odd).
+    margin            : Soft-mask margin.  Values > 1 require a component to
+                        exceed the other by this factor before claiming a bin.
+    mask_eps          : Numerical stability constant.
+ 
+    Returns
+    -------
+    dict with keys:
+        harmonic_mag    – median-filtered harmonic estimate
+        percussive_mag  – median-filtered percussive estimate
+        harmonic_mask   – soft mask emphasising harmonic energy
+        percussive_mask – soft mask emphasising percussive energy
+        residual_mask   – energy claimed by neither component
+        vocal_mask      – harmonic_mask (singing voice is predominantly harmonic)
+    """
+    from scipy.ndimage import median_filter
+ 
+    harmonic_kernel   = _ensure_odd(harmonic_kernel,   "harmonic_kernel")
+    percussive_kernel = _ensure_odd(percussive_kernel, "percussive_kernel")
+ 
+    # Median filter along time axis  → harmonic model (horizontal continuity)
+    harmonic_mag = median_filter(mag, size=(1, harmonic_kernel))
+ 
+    # Median filter along frequency axis → percussive model (vertical continuity)
+    percussive_mag = median_filter(mag, size=(percussive_kernel, 1))
+ 
+    # Wiener-like soft masks with optional margin
+    # A bin is assigned to the harmonic component when:
+    #   harmonic_mag  >= margin * percussive_mag
+    # and vice versa.  The margin parameter controls aggressiveness.
+    h = harmonic_mag    ** 2
+    p = percussive_mag  ** 2
+    total = h + p + mask_eps
+ 
+    harmonic_mask   = np.clip(h / total, 0.0, 1.0)
+    percussive_mask = np.clip(p / total, 0.0, 1.0)
+ 
+    if margin > 1.0:
+        # Hard-threshold version: only assign bin if dominant by the margin.
+        h_dominant = harmonic_mag   >= margin * percussive_mag
+        p_dominant = percussive_mag >= margin * harmonic_mag
+ 
+        harmonic_mask_hard   = np.where(h_dominant, harmonic_mask, 0.0)
+        percussive_mask_hard = np.where(p_dominant, percussive_mask, 0.0)
+        residual_mask        = np.clip(1.0 - harmonic_mask_hard - percussive_mask_hard, 0.0, 1.0)
+ 
+        harmonic_mask   = harmonic_mask_hard
+        percussive_mask = percussive_mask_hard
+    else:
+        residual_mask = np.zeros_like(harmonic_mask)
+ 
+    # Vocal mask: singing voice is predominantly harmonic, so we expose the
+    # harmonic mask as the vocal-oriented estimate.  The residual (if any) is
+    # split equally between the two components as a conservative heuristic.
+    vocal_mask = harmonic_mask + 0.5 * residual_mask
+    vocal_mask = np.clip(vocal_mask, 0.0, 1.0)
+ 
+    return {
+        "harmonic_mag":    harmonic_mag,
+        "percussive_mag":  percussive_mag,
+        "harmonic_mask":   harmonic_mask,
+        "percussive_mask": percussive_mask,
+        "residual_mask":   residual_mask,
+        "vocal_mask":      vocal_mask,
+    }
+ 
+ 
+def hpss_vocal_mask_from_audio(
+    y_mix: np.ndarray,
+    sr: int,
+    n_fft: int = 2048,
+    hop_length: int = 512,
+    win_length: int = 2048,
+    harmonic_kernel: int = 31,
+    percussive_kernel: int = 31,
+    margin: float = 1.0,
+    mask_eps: float = 1e-8
+) -> dict:
+    """
+    Run HPSS from audio and return a vocal-oriented harmonic mask.
+ 
+    Parameters
+    ----------
+    y_mix             : Mono mixture waveform.
+    sr                : Sample rate.
+    n_fft / hop_length / win_length : STFT parameters.
+    harmonic_kernel   : Median filter length in time.
+    percussive_kernel : Median filter length in frequency.
+    margin            : Soft-mask margin (see hpss_masks_from_magnitude).
+    mask_eps          : Numerical stability constant.
+ 
+    Returns
+    -------
+    dict with keys:
+        mix_feat        – output of compute_stft_features
+        harmonic_mag    – harmonic magnitude estimate
+        percussive_mag  – percussive magnitude estimate
+        harmonic_mask   – soft harmonic mask
+        percussive_mask – soft percussive mask
+        residual_mask   – residual mask
+        vocal_mask      – soft vocal mask (harmonic-oriented)
+        background_mask – complement of vocal_mask
+    """
+    mix_feat = compute_stft_features(
+        y_mix, sr,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=win_length
+    )
+ 
+    hpss = hpss_masks_from_magnitude(
+        mix_feat["mag"],
+        harmonic_kernel=harmonic_kernel,
+        percussive_kernel=percussive_kernel,
+        margin=margin,
+        mask_eps=mask_eps
+    )
+ 
+    hpss["mix_feat"]        = mix_feat
+    hpss["background_mask"] = 1.0 - hpss["vocal_mask"]
+ 
+    return hpss
+ 
+ 
+def hpss_mask_metrics(
+    estimated_vocal_mask: np.ndarray,
+    ideal_vocal_mask: np.ndarray,
+    threshold: float = 0.5
+) -> dict:
+    """
+    Lightweight mask-quality metrics for HPSS vocal mask evaluation.
+ 
+    Identical in structure to repet_mask_metrics and rpca_mask_metrics so
+    results are directly comparable across all three unsupervised methods.
+    """
+    est = np.asarray(estimated_vocal_mask, dtype=np.float64)
+    ref = np.asarray(ideal_vocal_mask, dtype=np.float64)
+ 
+    if est.shape != ref.shape:
+        raise ValueError(f"Shape mismatch: est {est.shape}, ref {ref.shape}")
+ 
+    mae = float(np.mean(np.abs(est - ref)))
+    mse = float(np.mean((est - ref) ** 2))
+ 
+    est_bin = est >= threshold
+    ref_bin = ref >= threshold
+ 
+    tp = np.sum(est_bin & ref_bin)
+    fp = np.sum(est_bin & ~ref_bin)
+    fn = np.sum(~est_bin & ref_bin)
+ 
+    precision = float(tp / (tp + fp + 1e-8))
+    recall    = float(tp / (tp + fn + 1e-8))
+    f1        = float(2 * precision * recall / (precision + recall + 1e-8))
+ 
+    corr = (
+        float(np.corrcoef(est.ravel(), ref.ravel())[0, 1])
+        if np.std(est) > 0 and np.std(ref) > 0
+        else 0.0
+    )
+ 
+    return {
+        "mae": mae,
+        "mse": mse,
+        "precision@thr": precision,
+        "recall@thr": recall,
+        "f1@thr": f1,
+        "corr": corr,
+    }
+ 
+ 
+def save_hpss_outputs(
+    outdir: str,
+    track_name: str,
+    mix_mag_db: np.ndarray,
+    vocal_mask: np.ndarray,
+    ideal_mask: np.ndarray,
+    harmonic_mag: np.ndarray,
+    percussive_mag: np.ndarray,
+    sr: int,
+    hop_length: int
+) -> None:
+    """Save HPSS spectrograms and masks as PNG files."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    safe_name = track_name.replace("/", "_").replace("\\", "_")
+ 
+    plot_spectrogram(
+        mix_mag_db, sr, hop_length,
+        title=f"Mixture Spectrogram: {track_name}",
+        save_path=str(outdir / f"{safe_name}_hpss_mix_spec.png"),
+        db_scale=True
+    )
+ 
+    plot_spectrogram(
+        vocal_mask, sr, hop_length,
+        title=f"HPSS Vocal Mask (Harmonic): {track_name}",
+        save_path=str(outdir / f"{safe_name}_hpss_vocal_mask.png"),
+        db_scale=False
+    )
+ 
+    plot_spectrogram(
+        ideal_mask, sr, hop_length,
+        title=f"Ideal Vocal Mask: {track_name}",
+        save_path=str(outdir / f"{safe_name}_hpss_ideal_vocal_mask.png"),
+        db_scale=False
+    )
+ 
+    harmonic_db = librosa.amplitude_to_db(harmonic_mag, ref=np.max)
+    plot_spectrogram(
+        harmonic_db, sr, hop_length,
+        title=f"HPSS Harmonic Component: {track_name}",
+        save_path=str(outdir / f"{safe_name}_hpss_harmonic.png"),
+        db_scale=True
+    )
+ 
+    percussive_db = librosa.amplitude_to_db(percussive_mag + 1e-8, ref=np.max)
+    plot_spectrogram(
+        percussive_db, sr, hop_length,
+        title=f"HPSS Percussive Component: {track_name}",
+        save_path=str(outdir / f"{safe_name}_hpss_percussive.png"),
+        db_scale=True
+    )
+"""
 -------------------------------------------------------------------------------
 GBDT utility functions:
 -------------------------------------------------------------------------------
