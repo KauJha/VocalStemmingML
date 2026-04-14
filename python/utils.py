@@ -46,6 +46,26 @@ Examples:
     # Adjust REPET period-search settings
     python repet_tester.py --mode sample --track "Actions - One Minute Smile" --min_period_sec 0.25 --max_period_sec 2.0
 -------------------------------------------------------------------------------
+Imports:
+-------------------------------------------------------------------------------
+"""
+import matplotlib.pyplot as plt
+from scipy.ndimage import median_filter
+
+import os
+
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import librosa
+import librosa.display
+import musdb
+
+"""
+-------------------------------------------------------------------------------
 RPCA utility functions:
 -------------------------------------------------------------------------------
 """
@@ -358,7 +378,6 @@ def hpss_masks_from_magnitude(
         residual_mask   – energy claimed by neither component
         vocal_mask      – harmonic_mask (singing voice is predominantly harmonic)
     """
-    from scipy.ndimage import median_filter
  
     harmonic_kernel   = _ensure_odd(harmonic_kernel,   "harmonic_kernel")
     percussive_kernel = _ensure_odd(percussive_kernel, "percussive_kernel")
@@ -568,24 +587,11 @@ def save_hpss_outputs(
     )
 """
 -------------------------------------------------------------------------------
-GBDT utility functions:
--------------------------------------------------------------------------------
 Verification utility functions:
 -------------------------------------------------------------------------------
-"""
-import os
-
-from pathlib import Path
-from typing import Dict, Any, Optional
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import librosa
-import librosa.display
-import musdb
-"""
+GBDT utility functions:
 -------------------------------------------------------------------------------
+
 Audio Utility Functions
 -------------------------------------------------------------------------------
 """
@@ -1239,8 +1245,6 @@ def save_repet_outputs(
         save_path=str(outdir / f"{safe_name}_ideal_vocal_mask.png"),
         db_scale=False
     )
-
-    import matplotlib.pyplot as plt
 
     plt.figure(figsize=(10, 4))
     plt.plot(beat_spectrum)
