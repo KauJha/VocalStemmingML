@@ -102,10 +102,29 @@ def main():
 
     est_mask = rpca["vocal_mask"]
 
-    metrics = utils.rpca_mask_metrics(
+    stem_estimates = utils.estimate_stems_from_mask(
+        mix_feat=mix_feat,
+        vocal_mask=est_mask,
+        length=len(y_mix)
+    )
+
+    stem_paths = utils.save_estimated_stems(
+        outdir=args.outdir,
+        track_name=data["track_name"],
+        stems=stem_estimates,
+        sr=sr,
+        prefix="rpca"
+    )
+
+    mask_metrics = utils.repet_mask_metrics(
         estimated_vocal_mask=est_mask,
         ideal_vocal_mask=ideal_mask,
         threshold=args.threshold
+    )
+
+    vocal_stem_metrics = utils.stem_metrics(
+    estimated_stem=stem_estimates["vocals_est"],
+    reference_stem=y_voc
     )
 
     utils.save_rpca_outputs(
@@ -126,7 +145,8 @@ def main():
         "lam": rpca["lam_used"],
         "n_iter": rpca["n_iter"],
         "converged": rpca["converged"],
-        **metrics
+        **mask_metrics,
+        **{f"vocals_{k}": v for k, v in vocal_stem_metrics.items()},
     }])
 
     outdir = Path(args.outdir)
@@ -139,9 +159,13 @@ def main():
     print(f"Lambda used: {rpca['lam_used']:.6f}")
     print(f"RPCA iterations: {rpca['n_iter']}  converged: {rpca['converged']}")
     print("Mask metrics:")
-    for k, v in metrics.items():
+    for k, v in mask_metrics.items():
+        print(f"  {k}: {v:.6f}")
+    print("Vocal Stem metrics:")
+    for k, v in vocal_stem_metrics.items():
         print(f"  {k}: {v:.6f}")
     print(f"Saved metrics to: {metrics_path}")
+    print(f"Saved RPCA stems to: {stem_paths}")
 
 
 if __name__ == "__main__":
