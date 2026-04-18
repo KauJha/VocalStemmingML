@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--outdir", type=str, default=str(default_outdir))
     parser.add_argument("--list_tracks", action="store_true")
+    parser.add_argument("--save_plots", action="store_true", help="Save spectrogram/mask plots to outdir")
     args = parser.parse_args()
 
     db = utils.get_database(
@@ -106,17 +107,18 @@ def main():
     reference_stem=y_voc
     )
 
-    utils.save_repet_outputs(
-        outdir=args.outdir,
-        track_name=data["track_name"],
-        mix_mag_db=mix_feat["mag_db"],
-        vocal_mask=est_mask,
-        ideal_mask=ideal_mask,
-        beat_spectrum=repet["beat_spectrum"],
-        period_scores=repet["period_scores"],
-        sr=sr,
-        hop_length=args.hop_length
-    )
+    if args.save_plots:
+        utils.save_repet_outputs(
+            outdir=args.outdir,
+            track_name=data["track_name"],
+            mix_mag_db=mix_feat["mag_db"],
+            vocal_mask=est_mask,
+            ideal_mask=ideal_mask,
+            beat_spectrum=repet["beat_spectrum"],
+            period_scores=repet["period_scores"],
+            sr=sr,
+            hop_length=args.hop_length
+        )
 
     metrics_df = pd.DataFrame([{
         "track": data["track_name"],

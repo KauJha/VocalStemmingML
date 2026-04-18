@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--hop_length", type=int, default=512)
     parser.add_argument("--win_length", type=int, default=2048)
     parser.add_argument("--irm_p", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--save_plots", action="store_true", help="Save spectrogram/mask plots to outdir")
     parser.add_argument(
         "--harmonic_kernel",
         type=int,
@@ -134,17 +135,18 @@ def main():
     reference_stem=y_voc
     )
 
-    utils.save_hpss_outputs(
-        outdir=args.outdir,
-        track_name=data["track_name"],
-        mix_mag_db=mix_feat["mag_db"],
-        vocal_mask=est_mask,
-        ideal_mask=ideal_mask,
-        harmonic_mag=hpss["harmonic_mag"],
-        percussive_mag=hpss["percussive_mag"],
-        sr=sr,
-        hop_length=args.hop_length
-    )
+    if args.save_plots:
+        utils.save_hpss_outputs(
+            outdir=args.outdir,
+            track_name=data["track_name"],
+            mix_mag_db=mix_feat["mag_db"],
+            vocal_mask=est_mask,
+            ideal_mask=ideal_mask,
+            harmonic_mag=hpss["harmonic_mag"],
+            percussive_mag=hpss["percussive_mag"],
+            sr=sr,
+            hop_length=args.hop_length
+        )
 
     metrics_df = pd.DataFrame([{
         "track": data["track_name"],
